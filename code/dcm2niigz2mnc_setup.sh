@@ -77,3 +77,5 @@ echo "======================================"
 echo "Setup completed: $(date)"
 echo "Executable: $TOOLS_DIR/dcm2niix"
 echo "======================================"
+
+cd "$REPO_DIR"
