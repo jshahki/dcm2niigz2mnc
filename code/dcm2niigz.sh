@@ -1,4 +1,3 @@
-
 #!/bin/bash
 #SBATCH --job-name=dcm2niigz
 #SBATCH --account=st-toddwood-1
