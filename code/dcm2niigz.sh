@@ -1,3 +1,4 @@
+
 #!/bin/bash
 #SBATCH --job-name=dcm2niigz
 #SBATCH --account=st-toddwood-1
@@ -28,16 +29,22 @@ DCM2NIIX="$TOOLS_DIR/dcm2niix"
 # Match the working split_bold script
 # ==================================================
 
+if [[ ! -f "$PARTICIPANTS" ]]; then
+    echo "ERROR: Missing participants file: $PARTICIPANTS"
+    exit 1
+fi
+
 mapfile -t SUBJECTS < <(
     tail -n +2 "$PARTICIPANTS" |
     cut -f1 |
     sed 's/\r//'
 )
 
-SUBJECT="${SUBJECTS[${SLURM_ARRAY_TASK_ID:-0}]:-}"
+TASK_ID="${SLURM_ARRAY_TASK_ID:-0}"
+SUBJECT="${SUBJECTS[$TASK_ID]:-}"
 
 if [[ -z "$SUBJECT" ]]; then
-    echo "No subject found for index ${SLURM_ARRAY_TASK_ID:-0}"
+    echo "No subject found for index $TASK_ID"
     exit 1
 fi
 
@@ -50,8 +57,9 @@ SUBJECT_UPPER="$(printf '%s' "$SUBJECT" | tr '[:lower:]' '[:upper:]')"
 SUBJECT_DATA_DIR="$DATA_DIR/$SUBJECT"
 ZIP_FILE="$SUBJECT_DATA_DIR/$SUBJECT_UPPER.zip"
 
-NIFTI_DIR="$DERIVATIVES_DIR/$SUBJECT/NIfTI"
-UNZIP_DIR="$NIFTI_DIR/$SUBJECT_UPPER"
+SUBJECT_DERIV_DIR="$DERIVATIVES_DIR/$SUBJECT"
+UNZIPPED_DIR="$SUBJECT_DERIV_DIR/unzipped"
+NIFTI_DIR="$SUBJECT_DERIV_DIR/NIfTI"
 
 # ==================================================
 # LOGGING
@@ -61,22 +69,18 @@ echo "=========================================="
 echo "DICOM TO NIFTI"
 echo "Subject: $SUBJECT"
 echo "Job ID: ${SLURM_JOB_ID:-unknown}"
-echo "Array task: ${SLURM_ARRAY_TASK_ID:-0}"
+echo "Array task: $TASK_ID"
 echo "Host: $(hostname)"
 echo "Start: $(date)"
 echo "=========================================="
 
-echo "Input directory: $SUBJECT_DATA_DIR"
+echo "Source directory: $SUBJECT_DATA_DIR"
+echo "Unzipped directory: $UNZIPPED_DIR"
 echo "NIfTI output: $NIFTI_DIR"
 
 # ==================================================
 # CHECK REQUIREMENTS
 # ==================================================
-
-if [[ ! -f "$PARTICIPANTS" ]]; then
-    echo "ERROR: Missing participants.tsv: $PARTICIPANTS"
-    exit 1
-fi
 
 if [[ ! -d "$SUBJECT_DATA_DIR" ]]; then
     echo "ERROR: Subject data directory not found: $SUBJECT_DATA_DIR"
@@ -93,88 +97,113 @@ if [[ ! -x "$DCM2NIIX" ]]; then
     fi
 fi
 
-for CMD in unzip find grep mktemp; do
+for CMD in unzip find mktemp; do
     if ! command -v "$CMD" >/dev/null 2>&1; then
         echo "ERROR: Required command not found: $CMD"
         exit 1
     fi
 done
 
-mkdir -p "$NIFTI_DIR"
+mkdir -p "$SUBJECT_DERIV_DIR" "$NIFTI_DIR"
 
 # ==================================================
-# EXTRACT ZIP IF PRESENT
+# FIND ZIP ARCHIVES
 # ==================================================
+
+# Search for ZIP files directly inside the subject's
+# data directory. This matches:
+# data/subject-c01/SUBJECT-C01.zip
+
+mapfile -t ZIP_FILES < <(
+    find "$SUBJECT_DATA_DIR" -maxdepth 1 -type f \
+        -iname '*.zip' -print | sort
+)
 
 EXTRACTED_BY_SCRIPT=0
-STAGING_DIR=""
+INPUT_DIR=""
 
-cleanup_staging() {
-    if [[ -n "${STAGING_DIR:-}" && -d "$STAGING_DIR" ]]; then
-        rm -rf -- "$STAGING_DIR"
-    fi
-}
+if (( ${#ZIP_FILES[@]} > 0 )); then
 
-trap cleanup_staging EXIT
+    echo "Found ${#ZIP_FILES[@]} ZIP archive(s):"
+    printf '  %s\n' "${ZIP_FILES[@]}"
 
-if [[ -f "$ZIP_FILE" ]]; then
-
-    echo "ZIP archive found: $ZIP_FILE"
-
-    if [[ -e "$UNZIP_DIR" ]]; then
-        echo "ERROR: Extraction destination already exists:"
-        echo "$UNZIP_DIR"
-        echo "Refusing to overwrite existing data."
+    # This pipeline expects one archive per subject.
+    if (( ${#ZIP_FILES[@]} > 1 )); then
+        echo "ERROR: Multiple ZIP archives found for $SUBJECT."
+        echo "Please handle these archives explicitly before proceeding."
         exit 1
     fi
 
-    STAGING_DIR="$(mktemp -d "$NIFTI_DIR/.staging_${SUBJECT}.XXXXXX")"
+    ZIP_FILE="${ZIP_FILES[0]}"
 
-    echo "Testing ZIP archive..."
+    # Avoid mixing new data with a previous extraction.
+    if [[ -e "$UNZIPPED_DIR" ]]; then
+        echo "ERROR: Extraction directory already exists:"
+        echo "$UNZIPPED_DIR"
+        echo "Inspect or rename it before rerunning this subject."
+        exit 1
+    fi
+
+    # Extract into a temporary directory first so a failed
+    # extraction cannot leave a partially populated output.
+    STAGING_DIR="$(mktemp -d "$SUBJECT_DERIV_DIR/.unzipped_staging.XXXXXX")"
+
+    cleanup_staging() {
+        if [[ -n "${STAGING_DIR:-}" && -d "$STAGING_DIR" ]]; then
+            rm -rf -- "$STAGING_DIR"
+        fi
+    }
+    trap cleanup_staging EXIT
+
+    echo "Testing archive: $ZIP_FILE"
     unzip -tq "$ZIP_FILE"
 
-    echo "Extracting ZIP archive..."
+    echo "Extracting archive..."
     unzip -q "$ZIP_FILE" -d "$STAGING_DIR"
 
+    # If the archive contains one top-level directory,
+    # use its contents as the unzipped directory.
     mapfile -t TOP_LEVEL < <(
         find "$STAGING_DIR" -mindepth 1 -maxdepth 1 -print
     )
 
-    if (( ${#TOP_LEVEL[@]} == 1 )) &&
-       [[ -d "${TOP_LEVEL[0]}" ]] &&
-       [[ "$(basename "${TOP_LEVEL[0]}")" == "$SUBJECT_UPPER" ]]; then
+    mkdir -p "$UNZIPPED_DIR"
 
-        mv -- "${TOP_LEVEL[0]}" "$UNZIP_DIR"
-        rmdir "$STAGING_DIR"
-        STAGING_DIR=""
+    if (( ${#TOP_LEVEL[@]} == 1 )) &&
+       [[ -d "${TOP_LEVEL[0]}" ]]; then
+
+        # Move the contents of the archive's top-level folder
+        # into derivatives/<subject>/unzipped/
+        mv -- "${TOP_LEVEL[0]}" "$UNZIPPED_DIR/"
 
     else
-        mv -- "$STAGING_DIR" "$UNZIP_DIR"
-        STAGING_DIR=""
+        # Preserve the archive's contents directly.
+        find "$STAGING_DIR" -mindepth 1 -maxdepth 1 \
+            -exec mv -t "$UNZIPPED_DIR" -- {} +
     fi
 
-    EXTRACTED_BY_SCRIPT=1
-    INPUT_DIR="$UNZIP_DIR"
+    rm -rf -- "$STAGING_DIR"
+    STAGING_DIR=""
+    trap - EXIT
 
-    echo "Extracted input: $INPUT_DIR"
+    EXTRACTED_BY_SCRIPT=1
+    INPUT_DIR="$UNZIPPED_DIR"
+
+    echo "Extraction completed: $UNZIPPED_DIR"
 
 else
 
-    echo "No ZIP archive found; checking for unzipped input."
+    echo "No ZIP files found in $SUBJECT_DATA_DIR"
 
+    # If no ZIP exists, use the original unzipped data.
+    # Do not delete original data in this case.
     if [[ -d "$SUBJECT_DATA_DIR/$SUBJECT_UPPER" ]]; then
         INPUT_DIR="$SUBJECT_DATA_DIR/$SUBJECT_UPPER"
-
-    elif [[ -d "$SUBJECT_DATA_DIR" ]]; then
-        INPUT_DIR="$SUBJECT_DATA_DIR"
-
     else
-        echo "ERROR: No usable input directory found."
-        exit 1
+        INPUT_DIR="$SUBJECT_DATA_DIR"
     fi
 
-    echo "Using existing input: $INPUT_DIR"
-    echo "Original input will not be deleted."
+    echo "Using existing input directory: $INPUT_DIR"
 fi
 
 # ==================================================
@@ -195,7 +224,7 @@ echo "=========================================="
     "$INPUT_DIR"
 
 # ==================================================
-# VERIFY NIFTI OUTPUT
+# VERIFY OUTPUT
 # ==================================================
 
 shopt -s nullglob
@@ -204,7 +233,7 @@ shopt -u nullglob
 
 if (( ${#NIFTI_FILES[@]} == 0 )); then
     echo "ERROR: No .nii.gz files found in $NIFTI_DIR"
-    echo "Keeping input data for troubleshooting."
+    echo "Keeping extracted data for troubleshooting."
     exit 1
 fi
 
@@ -212,16 +241,20 @@ echo "Found ${#NIFTI_FILES[@]} NIfTI file(s):"
 printf '  %s\n' "${NIFTI_FILES[@]}"
 
 # ==================================================
-# DELETE EXTRACTED DICOM AFTER SUCCESS
+# DELETE EXTRACTED DATA AFTER SUCCESS
 # ==================================================
 
 if (( EXTRACTED_BY_SCRIPT == 1 )); then
-    echo "NIfTI conversion completed."
-    echo "Removing extracted DICOM folder: $UNZIP_DIR"
-    rm -rf -- "$UNZIP_DIR"
+
+    echo "dcm2niix completed and NIfTI files were verified."
+    echo "Removing temporary extracted directory:"
+    echo "$UNZIPPED_DIR"
+
+    rm -rf -- "$UNZIPPED_DIR"
+
 else
     echo "Input was not extracted by this script."
-    echo "Preserving original input data."
+    echo "Original input data will be preserved."
 fi
 
 # ==================================================
@@ -241,6 +274,6 @@ mkdir -p "$(dirname "$STATUS_FILE")"
 
 echo "=========================================="
 echo "Finished subject: $SUBJECT"
-echo "Output: $NIFTI_DIR"
+echo "NIfTI output: $NIFTI_DIR"
 echo "End: $(date)"
 echo "=========================================="
