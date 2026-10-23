@@ -70,7 +70,9 @@ echo "Subject: $SUBJECT"
 echo "Job ID: ${SLURM_JOB_ID:-unknown}"
 echo "Array task: $TASK_ID"
 echo "Host: $(hostname)"
-echo "Start: $(date)"
+START_TIME="$(date '+%Y-%m-%d %H:%M:%S %Z')"
+START_EPOCH=$(date +%s)
+echo "Script started at: $START_TIME"
 echo "=========================================="
 
 echo "Source directory: $SUBJECT_DATA_DIR"
@@ -157,6 +159,9 @@ if (( ${#ZIP_FILES[@]} > 0 )); then
     echo "Testing archive: $ZIP_FILE"
     unzip -tq "$ZIP_FILE"
 
+    UNZIP_START_EPOCH=$(date +%s)
+    echo "Unzipping started at: $(date '+%Y-%m-%d %H:%M:%S %Z')"
+
     echo "Extracting archive..."
     unzip -q "$ZIP_FILE" -d "$STAGING_DIR"
 
@@ -188,7 +193,12 @@ if (( ${#ZIP_FILES[@]} > 0 )); then
     EXTRACTED_BY_SCRIPT=1
     INPUT_DIR="$UNZIPPED_DIR"
 
-    echo "Extraction completed: $UNZIPPED_DIR"
+    UNZIP_END_TIME="$(date '+%Y-%m-%d %H:%M:%S %Z')"
+    UNZIP_END_EPOCH=$(date +%s)
+
+    echo "Unzipped directory: $UNZIPPED_DIR"
+    echo "Unzipping completed at: $UNZIP_END_TIME"
+    echo "Unzipping duration: $((UNZIP_END_EPOCH - UNZIP_START_EPOCH)) seconds"
 
 else
 
@@ -215,12 +225,31 @@ echo "Input: $INPUT_DIR"
 echo "Output: $NIFTI_DIR"
 echo "=========================================="
 
+# Record dcm2niix start time
+DCM2NIIX_START_TIME="$(date '+%Y-%m-%d %H:%M:%S %Z')"
+DCM2NIIX_START_EPOCH=$(date +%s)
+
+echo "=========================================="
+echo "dcm2niix started at: $DCM2NIIX_START_TIME"
+echo "=========================================="
+
 "$DCM2NIIX" \
     -z y \
     -d 9 \
     -w 0 \
     -o "$NIFTI_DIR" \
     "$INPUT_DIR"
+
+# Record dcm2niix end time
+DCM2NIIX_END_TIME="$(date '+%Y-%m-%d %H:%M:%S %Z')"
+DCM2NIIX_END_EPOCH=$(date +%s)
+
+DCM2NIIX_DURATION=$((DCM2NIIX_END_EPOCH - DCM2NIIX_START_EPOCH))
+
+echo "=========================================="
+echo "dcm2niix completed at: $DCM2NIIX_END_TIME"
+echo "dcm2niix runtime: $((DCM2NIIX_DURATION / 3600)) hours, $(((DCM2NIIX_DURATION % 3600) / 60)) minutes, $((DCM2NIIX_DURATION % 60)) seconds"
+echo "=========================================="
 
 # ==================================================
 # VERIFY OUTPUT
@@ -271,8 +300,21 @@ mkdir -p "$(dirname "$STATUS_FILE")"
     echo "Output directory: $NIFTI_DIR"
 } > "$STATUS_FILE"
 
+# ==================================================
+# FINAL COMPLETION TIME
+# ==================================================
+
+SCRIPT_END_TIME="$(date '+%Y-%m-%d %H:%M:%S %Z')"
+SCRIPT_END_EPOCH=$(date +%s)
+
+TOTAL_RUNTIME=$((SCRIPT_END_EPOCH - START_EPOCH))
+
 echo "=========================================="
-echo "Finished subject: $SUBJECT"
+echo "PIPELINE COMPLETED SUCCESSFULLY"
+echo "Subject: $SUBJECT"
 echo "NIfTI output: $NIFTI_DIR"
-echo "End: $(date)"
+echo "Script started: $START_TIME"
+echo "dcm2niix runtime: $((DCM2NIIX_DURATION / 3600)) hours, $(((DCM2NIIX_DURATION % 3600) / 60)) minutes, $((DCM2NIIX_DURATION % 60)) seconds"
+echo "Final completion time: $SCRIPT_END_TIME"
+echo "Total script runtime: $((TOTAL_RUNTIME / 3600)) hours, $(((TOTAL_RUNTIME % 3600) / 60)) minutes, $((TOTAL_RUNTIME % 60)) seconds"
 echo "=========================================="
