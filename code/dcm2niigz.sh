@@ -2,9 +2,9 @@
 #SBATCH --job-name=dcm2niigz
 #SBATCH --account=st-toddwood-1
 #SBATCH --nodes=1
-#SBATCH --time=24:00:00
-#SBATCH --cpus-per-task=4
-#SBATCH --mem=200G
+#SBATCH --time=168:00:00
+#SBATCH --cpus-per-task=2
+#SBATCH --mem=32G
 #SBATCH --output=logs/dcm2niigz_%A_%a.out
 #SBATCH --error=logs/dcm2niigz_%A_%a.err
 
