@@ -233,12 +233,20 @@ echo "=========================================="
 echo "dcm2niix started at: $DCM2NIIX_START_TIME"
 echo "=========================================="
 
-"$DCM2NIIX" \
+if "$DCM2NIIX" \
     -z y \
     -d 9 \
     -w 0 \
     -o "$NIFTI_DIR" \
-    "$INPUT_DIR"
+    "$INPUT_DIR"; then
+
+    echo "dcm2niix returned successfully at $(date '+%Y-%m-%d %H:%M:%S %Z')"
+
+else
+    rc=$?
+    echo "ERROR: dcm2niix failed with exit code $rc at $(date '+%Y-%m-%d %H:%M:%S %Z')" >&2
+    exit "$rc"
+fi
 
 # Record dcm2niix end time
 DCM2NIIX_END_TIME="$(date '+%Y-%m-%d %H:%M:%S %Z')"
